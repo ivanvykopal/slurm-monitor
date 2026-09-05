@@ -12,6 +12,10 @@ pub struct UiState {
     pub open_health: Vec<String>,
     #[serde(default)]
     pub open_projects: Vec<String>,
+    #[serde(default)]
+    pub open_efficiency: Vec<String>,
+    #[serde(default)]
+    pub open_disks: Vec<String>,
 }
 
 impl UiState {

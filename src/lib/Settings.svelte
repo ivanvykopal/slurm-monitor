@@ -1,13 +1,19 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  let cfg = $state({ clusters: [], notifications: { notify_states: [], quiet_start: null, quiet_end: null } });
+  let cfg = $state({ clusters: [], notifications: { notify_states: [], quiet_start: null, quiet_end: null, attach_error_tail_lines: 50, notify_pending_after_secs: 7200, notify_walltime_pct: 90 } });
   let saving = $state(false);
   let error = $state("");
   let autostart = $state(false);
 
   onMount(async () => {
     cfg = await invoke("get_config");
+    // Older configs lack the escalation thresholds; apply defaults so the
+    // bound inputs don't save nulls over them.
+    const n = cfg.notifications;
+    n.attach_error_tail_lines ??= 50;
+    n.notify_pending_after_secs ??= 7200;
+    n.notify_walltime_pct ??= 90;
     autostart = await invoke("get_autostart_state");
   });
 
@@ -70,6 +76,18 @@
           <label for="slurm-conf-{i}">Custom slurm.conf path (optional)</label>
           <input id="slurm-conf-{i}" placeholder="~/slurm-custom/slurm/custom_slurm.conf" bind:value={c.slurm_conf_path} />
         </div>
+        <div class="field">
+          <label for="disk-paths-{i}">Watched filesystems (comma-sep)</label>
+          <input id="disk-paths-{i}" placeholder="/home, /scratch"
+            value={(c.disk_paths ?? ["/home", "/scratch"]).join(", ")}
+            oninput={(e) => c.disk_paths = e.target.value.split(",").map(s => s.trim()).filter(Boolean)} />
+        </div>
+        <div class="field">
+          <label for="quota-paths-{i}">Quota filesystems (comma-sep, usage vs per-user quota)</label>
+          <input id="quota-paths-{i}" placeholder="/home"
+            value={(c.quota_paths ?? []).join(", ")}
+            oninput={(e) => c.quota_paths = e.target.value.split(",").map(s => s.trim()).filter(Boolean)} />
+        </div>
         <button class="danger" onclick={() => removeCluster(i)}>Remove</button>
       </fieldset>
     {/each}
@@ -85,6 +103,17 @@
     </label>
     <label>Quiet start <input placeholder="HH:MM" bind:value={cfg.notifications.quiet_start} /></label>
     <label>Quiet end <input placeholder="HH:MM" bind:value={cfg.notifications.quiet_end} /></label>
+    <label title="Lines of stderr attached to FAILED / CANCELLED / TIMEOUT notifications (0 = off)">
+      Error stderr lines <input type="number" min="0" bind:value={cfg.notifications.attach_error_tail_lines} />
+    </label>
+    <label title="Notify once when a job waits in queue longer than this many minutes (0 = off)">
+      Pending-after (mins) <input type="number" min="0"
+        value={cfg.notifications.notify_pending_after_secs / 60}
+        oninput={(e) => cfg.notifications.notify_pending_after_secs = Math.round(Number(e.target.value || 0) * 60)} />
+    </label>
+    <label title="Notify once when a running job has used this percent of its walltime (0 = off)">
+      Walltime warn % <input type="number" min="0" max="100" bind:value={cfg.notifications.notify_walltime_pct} />
+    </label>
   </div>
 
   <div class="general-section">

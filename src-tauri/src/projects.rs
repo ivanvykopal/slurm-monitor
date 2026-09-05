@@ -35,6 +35,13 @@ pub struct ProjectInfo {
     /// across the <account> and <account>_gpu QOS; this holds their sum.
     /// "0" means no billing cap is set (e.g. PERUN).
     pub billing_hours_allocated: String,
+    /// GPU-hours consumed in the last 30 days, from sreport — the basis for
+    /// the daily burn rate. "0" when the recent-usage query failed.
+    pub gpu_hours_30d: String,
+    /// CPU core-hours consumed in the last 30 days.
+    pub cpu_hours_30d: String,
+    /// Billing TRES hours consumed in the last 30 days.
+    pub billing_hours_30d: String,
 }
 
 pub fn build_command(user: &str, slurm_conf: Option<&str>) -> String {
@@ -48,6 +55,16 @@ pub fn build_sreport_command(accounts: &str, slurm_conf: Option<&str>) -> String
     let env = crate::config::slurm_env_prefix(slurm_conf);
     format!(
         "bash -lc '{env}sreport cluster AccountUtilizationByUser Start=2024-01-01 End=now -t Hour -T cpu,gres/gpu,billing --parsable2 account={accounts}'"
+    )
+}
+
+/// Same as `build_sreport_command` but windowed to the last 30 days, for
+/// the daily burn rate. Output shape is identical, so `merge_sreport_30d`
+/// reuses the same parsing.
+pub fn build_sreport_30d_command(accounts: &str, slurm_conf: Option<&str>) -> String {
+    let env = crate::config::slurm_env_prefix(slurm_conf);
+    format!(
+        "bash -lc '{env}sreport cluster AccountUtilizationByUser Start=-30days End=now -t Hour -T cpu,gres/gpu,billing --parsable2 account={accounts}'"
     )
 }
 
@@ -160,6 +177,9 @@ pub fn parse(output: &str) -> Vec<ProjectInfo> {
                 cpu_hours_allocated: "0".to_string(),
                 billing_hours: "0".to_string(),
                 billing_hours_allocated: "0".to_string(),
+                gpu_hours_30d: "0".to_string(),
+                cpu_hours_30d: "0".to_string(),
+                billing_hours_30d: "0".to_string(),
             })
         })
         .collect()
@@ -264,6 +284,33 @@ pub fn merge_sreport(projects: &mut [ProjectInfo], sreport_output: &str) {
     }
 }
 
+/// Merge the 30-day sreport window into the `*_hours_30d` fields. Same
+/// output shape as `merge_sreport` but only account-total rows matter (the
+/// burn rate is per-project). Per-user rows are ignored.
+pub fn merge_sreport_30d(projects: &mut [ProjectInfo], sreport_output: &str) {
+    for line in sreport_output.lines() {
+        let f: Vec<&str> = line.split('|').collect();
+        if f.len() != 6 {
+            continue;
+        }
+        let account = f[1].trim();
+        let login = f[2].trim();
+        let tres = f[4].trim();
+        let used = f[5].trim();
+        if !login.is_empty() || account.is_empty() || used.parse::<f64>().is_err() {
+            continue;
+        }
+        let Some(project) = projects.iter_mut().find(|p| p.account == account) else {
+            continue;
+        };
+        match tres {
+            "cpu" => project.cpu_hours_30d = used.to_string(),
+            "billing" => project.billing_hours_30d = used.to_string(),
+            _ => project.gpu_hours_30d = used.to_string(),
+        }
+    }
+}
+
 /// sacctmgr --parsable2 qos output: Name|GrpTRESMins
 /// GrpTRESMins looks like "cpu=5308440,gres/gpu=336960" (minutes) or is empty.
 /// The QOS name matches the account; the minutes / 60 give the allocated
@@ -333,6 +380,9 @@ mod tests {
                 cpu_hours_allocated: "0".into(),
                 billing_hours: "0".into(),
                 billing_hours_allocated: "0".into(),
+                gpu_hours_30d: "0".into(),
+                cpu_hours_30d: "0".into(),
+                billing_hours_30d: "0".into(),
             }
         );
     }
@@ -395,6 +445,9 @@ mod tests {
                 cpu_hours_allocated: "0".into(),
                 billing_hours: "0".into(),
                 billing_hours_allocated: "0".into(),
+                gpu_hours_30d: "0".into(),
+                cpu_hours_30d: "0".into(),
+                billing_hours_30d: "0".into(),
             },
             ProjectInfo {
                 account: "proj-beta".into(),
@@ -407,6 +460,9 @@ mod tests {
                 cpu_hours_allocated: "0".into(),
                 billing_hours: "0".into(),
                 billing_hours_allocated: "0".into(),
+                gpu_hours_30d: "0".into(),
+                cpu_hours_30d: "0".into(),
+                billing_hours_30d: "0".into(),
             },
         ]
     }
@@ -615,5 +671,32 @@ proj-beta|cpu=5308440,gres/gpu=336960
         assert!(cmd.contains("account=a1,a2"));
         assert!(cmd.contains("-T cpu,gres/gpu,billing"));
         assert!(cmd.contains("--parsable2"));
+    }
+
+    #[test]
+    fn builds_sreport_30d_command_windows_thirty_days() {
+        let cmd = build_sreport_30d_command("a1", None);
+        assert!(cmd.contains("Start=-30days End=now"));
+        assert!(cmd.contains("account=a1"));
+        assert!(cmd.contains("--parsable2"));
+    }
+
+    #[test]
+    fn merges_30d_window_ignoring_user_rows() {
+        let mut projects = base_projects();
+        let out = "\
+Cluster|Account|Login|Proper Name|TRES Name|Used
+devana|proj-alpha|||cpu|1000
+devana|proj-alpha|||gres/gpu|200
+devana|proj-alpha|||billing|300
+devana|proj-alpha|bob|Bob Doe|gres/gpu|999
+devana|proj-beta|||cpu|50
+";
+        merge_sreport_30d(&mut projects, out);
+        assert_eq!(projects[0].cpu_hours_30d, "1000");
+        assert_eq!(projects[0].gpu_hours_30d, "200");
+        assert_eq!(projects[0].billing_hours_30d, "300");
+        assert_eq!(projects[1].cpu_hours_30d, "50");
+        assert_eq!(projects[1].gpu_hours_30d, "0");
     }
 }

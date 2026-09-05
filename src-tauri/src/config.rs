@@ -20,7 +20,32 @@ pub struct ClusterConfig {
     /// SLURM command runs with SLURM_CONF=<path>.
     #[serde(default)]
     pub slurm_conf_path: Option<String>,
+    /// Filesystems to watch in the disks panel. Defaults to /home and
+    /// /scratch.
+    #[serde(default = "default_disk_paths")]
+    pub disk_paths: Vec<String>,
+    /// Paths reported via per-user quota instead of df (opt-in, empty by
+    /// default). `df` shows the whole filesystem's capacity, not a user's
+    /// quota, so on clusters where /home has a quota (e.g. perun's 500 GB)
+    /// list it here to show usage against the real limit. A path that
+    /// yields no quota falls back to df.
+    #[serde(default)]
+    pub quota_paths: Vec<String>,
+    /// Override for the quota query, with `{user}` and `{path}` placeholders.
+    /// Defaults to Lustre's `lfs quota`, then plain `quota -s`. Set this when
+    /// the cluster uses a different quota tool.
+    #[serde(default)]
+    pub quota_command: Option<String>,
 }
+
+fn default_disk_paths() -> Vec<String> {
+    vec!["/home".into(), "/scratch".into()]
+}
+
+/// Default quota query: try Lustre's per-path `lfs quota`, else plain
+/// `quota -s` (all filesystems). Both print the same tabular layout.
+pub const DEFAULT_QUOTA_COMMAND: &str =
+    "lfs quota -h -u {user} {path} 2>/dev/null || quota -s 2>/dev/null";
 
 /// Shell prefix setting SLURM_CONF for a command, when a custom config
 /// path is configured. The path is inserted unquoted: it must be
@@ -40,6 +65,29 @@ pub struct NotificationConfig {
     pub quiet_start: Option<String>, // "HH:MM"
     #[serde(default)]
     pub quiet_end: Option<String>,
+    /// Lines of stderr to attach to FAILED/CANCELLED notifications. 0 = off.
+    #[serde(default = "default_error_tail_lines")]
+    pub attach_error_tail_lines: u32,
+    /// Notify once when a job stays PENDING longer than this (seconds).
+    /// 0 = off.
+    #[serde(default = "default_pending_after_secs")]
+    pub notify_pending_after_secs: u64,
+    /// Notify once when a RUNNING job crosses this percent of its walltime.
+    /// 0 = off.
+    #[serde(default = "default_walltime_pct")]
+    pub notify_walltime_pct: u32,
+}
+
+fn default_error_tail_lines() -> u32 {
+    50
+}
+
+fn default_pending_after_secs() -> u64 {
+    7200
+}
+
+fn default_walltime_pct() -> u32 {
+    90
 }
 
 impl Default for NotificationConfig {
@@ -48,6 +96,9 @@ impl Default for NotificationConfig {
             notify_states: Vec::new(),
             quiet_start: None,
             quiet_end: None,
+            attach_error_tail_lines: default_error_tail_lines(),
+            notify_pending_after_secs: default_pending_after_secs(),
+            notify_walltime_pct: default_walltime_pct(),
         }
     }
 }
@@ -71,6 +122,10 @@ fn default_poll_interval() -> u64 {
 impl ClusterConfig {
     pub fn effective_squeue_user(&self) -> &str {
         self.squeue_user.as_deref().unwrap_or(&self.username)
+    }
+
+    pub fn quota_command_template(&self) -> &str {
+        self.quota_command.as_deref().unwrap_or(DEFAULT_QUOTA_COMMAND)
     }
 }
 
@@ -108,6 +163,8 @@ impl Config {
             squeue_user: Option<String>,
             #[serde(default)]
             slurm_conf_path: Option<String>,
+            #[serde(default)]
+            disk_paths: Option<Vec<String>>,
         }
         let legacy: Legacy = toml::from_str(legacy_toml).ok()?;
         Some(Config {
@@ -121,6 +178,9 @@ impl Config {
                 poll_interval_secs: legacy.poll_interval_secs,
                 squeue_user: legacy.squeue_user,
                 slurm_conf_path: legacy.slurm_conf_path,
+                disk_paths: legacy.disk_paths.unwrap_or_else(default_disk_paths),
+                quota_paths: Vec::new(),
+                quota_command: None,
             }],
             notifications: NotificationConfig::default(),
         })
@@ -267,6 +327,64 @@ mod tests {
         assert_eq!(
             cfg.clusters[0].slurm_conf_path.as_deref(),
             Some("~/slurm-custom/slurm/custom_slurm.conf")
+        );
+    }
+
+    #[test]
+    fn notification_defaults_match_documented_values() {
+        let cfg = NotificationConfig::default();
+        assert_eq!(cfg.attach_error_tail_lines, 50);
+        assert_eq!(cfg.notify_pending_after_secs, 7200);
+        assert_eq!(cfg.notify_walltime_pct, 90);
+    }
+
+    #[test]
+    fn notification_thresholds_parse_from_toml() {
+        let file = write_temp_config(
+            r#"
+            [notifications]
+            attach_error_tail_lines = 10
+            notify_pending_after_secs = 3600
+            notify_walltime_pct = 75
+            "#,
+        );
+        let cfg = Config::load(file.path()).expect("config should load");
+        assert_eq!(cfg.notifications.attach_error_tail_lines, 10);
+        assert_eq!(cfg.notifications.notify_pending_after_secs, 3600);
+        assert_eq!(cfg.notifications.notify_walltime_pct, 75);
+    }
+
+    #[test]
+    fn disk_paths_default_to_home_and_scratch() {
+        let file = write_temp_config(
+            r#"
+            [[clusters]]
+            name = "devana"
+            host = "login.cluster.example"
+            username = "jdoe"
+            key_path = "/home/jdoe/.ssh/id_ed25519"
+            "#,
+        );
+        let cfg = Config::load(file.path()).expect("config should load");
+        assert_eq!(cfg.clusters[0].disk_paths, vec!["/home", "/scratch"]);
+    }
+
+    #[test]
+    fn disk_paths_parse_custom_list() {
+        let file = write_temp_config(
+            r#"
+            [[clusters]]
+            name = "devana"
+            host = "login.cluster.example"
+            username = "jdoe"
+            key_path = "/home/jdoe/.ssh/id_ed25519"
+            disk_paths = ["/home/ivan", "/fast_scratch"]
+            "#,
+        );
+        let cfg = Config::load(file.path()).expect("config should load");
+        assert_eq!(
+            cfg.clusters[0].disk_paths,
+            vec!["/home/ivan", "/fast_scratch"]
         );
     }
 }

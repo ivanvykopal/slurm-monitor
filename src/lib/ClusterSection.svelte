@@ -1,7 +1,7 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { uiState } from "./stores.js";
+  import { uiState, projectsByCluster } from "./stores.js";
   import JobRow from "./JobRow.svelte";
   let { cluster, jobs = [], conn = { status: "…", detail: "", next_retry_secs: 0 }, mode = "expanded" } = $props();
 
@@ -12,6 +12,13 @@
   let healthLoading = $state(false);
   let projects = $state(null);
   let projectsLoading = $state(false);
+  let efficiency = $state(null);
+  let efficiencyLoading = $state(false);
+  let disks = $state(null);
+  let disksLoading = $state(false);
+
+  let showEfficiency = $derived($uiState.open_efficiency?.includes(cluster) ?? false);
+  let showDisks = $derived($uiState.open_disks?.includes(cluster) ?? false);
 
   function setOpen(value) {
     uiState.update(s => ({
@@ -40,6 +47,7 @@
     try {
       const result = await invoke("cluster_projects", { cluster });
       projects = result.projects ?? [];
+      projectsByCluster.update(m => ({ ...m, [cluster]: projects }));
     } catch (e) {
       let msg = String(e);
       if (msg.includes("6819") || msg.includes("talking to the database")) {
@@ -56,6 +64,72 @@
   function retryProjects() {
     projects = null;
     loadProjects();
+  }
+
+  async function loadEfficiency() {
+    if (efficiencyLoading || efficiency) return;
+    efficiencyLoading = true;
+    try {
+      const result = await invoke("cluster_efficiency", { cluster });
+      efficiency = result.jobs ?? [];
+    } catch (e) {
+      efficiency = { error: String(e) };
+    } finally {
+      efficiencyLoading = false;
+    }
+  }
+
+  function retryEfficiency() {
+    efficiency = null;
+    loadEfficiency();
+  }
+
+  async function loadDisks() {
+    if (disksLoading || disks) return;
+    disksLoading = true;
+    try {
+      const result = await invoke("cluster_disks", { cluster });
+      disks = result.disks ?? [];
+    } catch (e) {
+      disks = { error: String(e) };
+    } finally {
+      disksLoading = false;
+    }
+  }
+
+  function retryDisks() {
+    disks = null;
+    loadDisks();
+  }
+
+  function toggleDisksPanel() {
+    const willShow = !showDisks;
+    uiState.update(s => ({
+      ...s,
+      open_disks: willShow
+        ? [...(s.open_disks ?? []), cluster]
+        : (s.open_disks ?? []).filter(c => c !== cluster)
+    }));
+    if (willShow) {
+      loadDisks();
+    } else {
+      disks = null;
+    }
+  }
+
+  function toggleEfficiencyPanel() {
+    const willShow = !showEfficiency;
+    uiState.update(s => ({
+      ...s,
+      open_efficiency: willShow
+        ? [...(s.open_efficiency ?? []), cluster]
+        : (s.open_efficiency ?? []).filter(c => c !== cluster)
+    }));
+    if (willShow) {
+      loadEfficiency();
+    } else {
+      efficiency = null;
+    }
   }
 
   function toggleHealthPanel() {
@@ -90,12 +164,14 @@
     }
   });
 
-  // Load once if the projects panel was persisted open across restarts.
-  // Ongoing opens/closes are driven by toggleProjectsPanel, not a reactive
-  // effect, so the account data is fetched exactly once per open instead of
-  // being re-fetched in a loop.
+  // Load once if the projects / efficiency panels were persisted open
+  // across restarts. Ongoing opens/closes are driven by the toggle
+  // functions, not a reactive effect, so the data is fetched exactly once
+  // per open instead of being re-fetched in a loop.
   onMount(() => {
     if (showProjects) loadProjects();
+    if (showEfficiency) loadEfficiency();
+    if (showDisks) loadDisks();
   });
 
   function parseNum(value) {
@@ -127,6 +203,41 @@
     if (ratio >= 0.7) return "mid";
     return "low";
   }
+
+  // "312 GPU-h left · ~9.3/day → ~34 days", or null when no cap or no
+  // recent usage. Days-left uses the 30-day daily burn; under 7 days is
+  // treated as urgent by the caller.
+  function burnText(spent, allocated, spent30d) {
+    if (allocated === null || allocated <= 0) return null;
+    const remaining = Math.max(0, allocated - spent);
+    const daily = (spent30d ?? 0) / 30;
+    if (daily <= 0) {
+      return `${fmtNum(remaining)}-h left`;
+    }
+    const days = remaining / daily;
+    return `${fmtNum(remaining)}-h left · ~${daily.toFixed(1)}/day → ~${Math.floor(days)} days`;
+  }
+
+  function daysLeft(spent, allocated, spent30d) {
+    if (allocated === null || allocated <= 0) return null;
+    const daily = (spent30d ?? 0) / 30;
+    if (daily <= 0) return null;
+    return Math.max(0, (allocated - spent) / daily);
+  }
+
+  function fmtNum(n) {
+    return Math.round(n).toLocaleString("en-US");
+  }
+
+  // Efficiency flags for a finished job: over-requesting slows the queue.
+  function effFlags(j) {
+    const flags = [];
+    if (j.cpu_util_pct != null && j.cpu_util_pct < 10) flags.push("low CPU");
+    if (j.mem_ratio_pct != null && j.mem_ratio_pct < 10) flags.push("low mem");
+    if (j.mem_ratio_pct != null && j.mem_ratio_pct > 100) flags.push("over mem");
+    if (j.walltime_pct != null && j.walltime_pct < 25) flags.push("short run");
+    return flags;
+  }
 </script>
 
 <section class="cluster">
@@ -139,6 +250,8 @@
     </span>
     <button class:active={showHealth} onclick={(e) => { e.stopPropagation(); toggleHealthPanel(); }} title={showHealth ? "hide cluster health" : "show cluster health"}>☰</button>
     <button class:active={showProjects} onclick={(e) => { e.stopPropagation(); toggleProjectsPanel(); }} title={showProjects ? "hide projects" : "show projects (accounts with usage and GPU)"}>◫</button>
+    <button class:active={showEfficiency} onclick={(e) => { e.stopPropagation(); toggleEfficiencyPanel(); }} title={showEfficiency ? "hide efficiency report" : "show efficiency of finished jobs (last 7 days)"}>⚡</button>
+    <button class:active={showDisks} onclick={(e) => { e.stopPropagation(); toggleDisksPanel(); }} title={showDisks ? "hide disk usage" : "show disk usage (home and scratch)"}>💾</button>
   </header>
   {#if showProjects}
     <div class="health projects">
@@ -167,6 +280,12 @@
                 </div>
                 <span class="usage-text">{hoursText(gpuSpent, gpuAlloc, "GPU")}</span>
               </div>
+              {#if burnText(gpuSpent, gpuAlloc, parseNum(p.gpu_hours_30d))}
+                {@const gpuDays = daysLeft(gpuSpent, gpuAlloc, parseNum(p.gpu_hours_30d))}
+                <div class="usage-burn {gpuDays !== null && gpuDays < 7 ? 'urgent' : ''}">
+                  {burnText(gpuSpent, gpuAlloc, parseNum(p.gpu_hours_30d))}
+                </div>
+              {/if}
               <div class="usage-line" class:skip={cpuAlloc === null || cpuAlloc <= 0}
                    title={`CPU: ${hoursText(cpuSpent, cpuAlloc, "CPU")}`}>
                 <span class="usage-label">CPU</span>
@@ -175,6 +294,9 @@
                 </div>
                 <span class="usage-text">{hoursText(cpuSpent, cpuAlloc, "CPU")}</span>
               </div>
+              {#if burnText(cpuSpent, cpuAlloc, parseNum(p.cpu_hours_30d))}
+                <div class="usage-burn">{burnText(cpuSpent, cpuAlloc, parseNum(p.cpu_hours_30d))}</div>
+              {/if}
               {#if showBilling}
                 <div class="usage-line" class:skip={billAlloc === null || billAlloc <= 0}
                      title={`Billing: ${hoursText(billSpent, billAlloc, "billing")} — cluster budget unit (GPU counts 16x CPU)`}>
@@ -184,6 +306,12 @@
                   </div>
                   <span class="usage-text">{hoursText(billSpent, billAlloc, "billing")}</span>
                 </div>
+                {#if burnText(billSpent, billAlloc, parseNum(p.billing_hours_30d))}
+                  {@const billDays = daysLeft(billSpent, billAlloc, parseNum(p.billing_hours_30d))}
+                  <div class="usage-burn {billDays !== null && billDays < 7 ? 'urgent' : ''}">
+                    {burnText(billSpent, billAlloc, parseNum(p.billing_hours_30d))}
+                  </div>
+                {/if}
               {/if}
             </div>
           </div>
@@ -193,14 +321,71 @@
       {/if}
     </div>
   {/if}
+  {#if showDisks}
+    <div class="health disks">
+      {#if disksLoading}
+        <div>Loading disk usage…</div>
+      {:else if disks?.error}
+        <div class="err">{disks.error}</div>
+        <button class="retry-btn" onclick={retryDisks} disabled={disksLoading}>↻ Retry</button>
+      {:else if disks?.length}
+        {#each disks as d (d.filesystem)}
+          {@const pct = d.used_pct}
+          <div class="usage-line" class:skip={pct == null}
+               title={`${d.filesystem}: ${d.used} of ${d.size} used`}>
+            <span class="usage-label disk" title={d.filesystem}>{d.filesystem}</span>
+            <div class="usage-bar {tier(pct ?? 0, 100)}">
+              <div class="usage-fill" style={`width:${pct ?? 0}%`}></div>
+            </div>
+            <span class="usage-text">{pct == null ? `${d.used} / ${d.size}` : `${pct}% of ${d.size}`}</span>
+          </div>
+        {/each}
+      {:else}
+        <div>No mounted filesystems matched the configured paths.</div>
+      {/if}
+    </div>
+  {/if}
+  {#if showEfficiency}
+    <div class="health efficiency">
+      {#if efficiencyLoading}
+        <div>Loading finished jobs… (may take up to ~30s if the cluster is unreachable)</div>
+      {:else if efficiency?.error}
+        <div class="err">{efficiency.error}</div>
+        <button class="retry-btn" onclick={retryEfficiency} disabled={efficiencyLoading}>↻ Retry</button>
+      {:else if efficiency?.length}
+        <div class="eff-hint">Finished jobs, last 7 days — over-requested jobs slow the queue</div>
+        {#each efficiency as j (j.id)}
+          <div class="eff-row">
+            <span class="eff-name" title={`${j.id} · ${j.elapsed} · ${j.alloc_cpus} CPUs`}>{j.name}</span>
+            <span class="eff-state {j.state === 'COMPLETED' ? 'ok' : 'bad'}">{j.state}</span>
+            <span class="eff-metric" title="CPU utilization (CPUTime / reserved CPU-time)">
+              {j.cpu_util_pct == null ? "CPU ?" : `CPU ${Math.round(j.cpu_util_pct)}%`}
+            </span>
+            <span class="eff-metric" title={`Memory: ${j.mem_used} used / ${j.mem_req} requested`}>
+              {j.mem_ratio_pct == null ? "mem ?" : `mem ${Math.round(j.mem_ratio_pct)}%`}
+            </span>
+            <span class="eff-metric" title="Fraction of requested walltime used">
+              {j.walltime_pct == null ? "wall ?" : `wall ${Math.round(j.walltime_pct)}%`}
+            </span>
+            {#each effFlags(j) as flag (flag)}<span class="eff-flag">{flag}</span>{/each}
+          </div>
+        {/each}
+      {:else}
+        <div>No finished jobs in the last 7 days.</div>
+      {/if}
+    </div>
+  {/if}
   {#if showHealth && health}
     <div class="health">
       {#if health.fair_share}<div>Fair-share priority: {health.fair_share}</div>{/if}
+      <div class="health-hint">Sorted by idle nodes — the top partition is the best place to submit right now</div>
       {#each health.partitions ?? [] as p}
         {@const [alloc, idle, other, total] = p.nodes.split("/")}
         <div>
           <strong>{p.partition}</strong> ({p.avail}) &mdash;
-          {alloc} allocated · {idle} idle · {other} other · {total} total nodes
+          {alloc} allocated · {idle} idle · {other} other · {total} total nodes ·
+          max {p.max_time}
+          {#if p.running_jobs || p.queued_jobs}· {p.running_jobs} running · {p.queued_jobs} queued{/if}
         </div>
       {/each}
       {#if health.error}<div class="err">{health.error}</div>{/if}
@@ -308,5 +493,63 @@
   .projects .retry-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+  .disks .usage-label.disk {
+    width: 7em;
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .projects .usage-burn {
+    font-size: var(--font-xs);
+    color: var(--color-text-muted);
+    margin: 0 0 2px calc(2.25em + var(--space-1));
+    opacity: 0.85;
+  }
+  .projects .usage-burn.urgent {
+    color: var(--color-danger, #f85149);
+    font-weight: 600;
+    opacity: 1;
+  }
+  .health .health-hint {
+    font-size: var(--font-xs);
+    color: var(--color-text-muted);
+    opacity: 0.8;
+    margin-bottom: var(--space-1);
+  }
+  .efficiency .eff-hint {
+    font-size: var(--font-xs);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-1);
+    opacity: 0.8;
+  }
+  .efficiency .eff-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    font-size: var(--font-xs);
+    margin-bottom: 2px;
+  }
+  .efficiency .eff-name {
+    font-weight: 600;
+    max-width: 12em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .efficiency .eff-state.ok { color: var(--color-ok, #3fb950); }
+  .efficiency .eff-state.bad { color: var(--color-danger, #f85149); }
+  .efficiency .eff-metric {
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+  .efficiency .eff-flag {
+    font-size: var(--font-xs);
+    color: var(--color-warn, #d29922);
+    border: 1px solid currentColor;
+    border-radius: var(--radius-sm);
+    padding: 0 4px;
   }
 </style>

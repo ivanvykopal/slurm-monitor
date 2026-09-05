@@ -106,6 +106,66 @@ struct ConnUpdate<'a> {
     detail: &'a str,
 }
 
+/// States whose notifications deserve the stderr tail attached.
+fn is_failed_state(state: &str) -> bool {
+    state.starts_with("FAILED") || state.starts_with("CANCELLED") || state.starts_with("TIMEOUT")
+        || state.starts_with("OUT_OF_MEMORY") || state.starts_with("NODE_FAIL")
+}
+
+/// Fetch the tail of a failed job's stderr file. Consumes and returns the
+/// runner (same move-into-blocking-task pattern as the squeue poll), because
+/// SSH execution is blocking. The returned string is used as notification/
+/// history detail.
+async fn fetch_stderr_tail<R: CommandRunner + 'static>(
+    runner: R,
+    cfg: &PollerConfig,
+    job: &JobStatus,
+) -> (Option<String>, R) {
+    let lines = cfg.notifications.attach_error_tail_lines;
+    if lines == 0 {
+        return (None, runner);
+    }
+    let scontrol_cmd = crate::logtail::build_stdout_path_command(
+        &job.id,
+        cfg.slurm_conf_path.as_deref(),
+    );
+    let (scontrol, runner) = run_blocking(runner, scontrol_cmd).await;
+    let Some(scontrol) = scontrol else {
+        return (None, runner);
+    };
+    let Some(path) = crate::logtail::parse_stderr_path(&scontrol) else {
+        return (None, runner);
+    };
+    let tail_cmd = crate::logtail::build_tail_command(&path, lines);
+    let (tail, runner) = run_blocking(runner, tail_cmd).await;
+    let Some(tail) = tail else {
+        return (None, runner);
+    };
+    let tail = tail.trim_end();
+    if tail.is_empty() {
+        return (None, runner);
+    }
+    // tail -n already bounds the line count; just strip a trailing newline.
+    let text = tail.to_string();
+    (Some(format!("last stderr:\n{text}")), runner)
+}
+
+/// Run one blocking SSH command on the async runtime. Takes the runner by
+/// value and returns it back along with the command output (Err is mapped
+/// to None — the stderr tail is best-effort).
+async fn run_blocking<R: CommandRunner + 'static>(
+    mut runner: R,
+    command: String,
+) -> (Option<String>, R) {
+    let (result, returned_runner) = tokio::task::spawn_blocking(move || {
+        let result = runner.run(&command);
+        (result, runner)
+    })
+    .await
+    .expect("ssh command task panicked");
+    (result.ok(), returned_runner)
+}
+
 pub async fn run_poller<R: CommandRunner + 'static>(
     mut runner: R,
     cfg: PollerConfig,
@@ -114,6 +174,15 @@ pub async fn run_poller<R: CommandRunner + 'static>(
 ) {
     let mut previous: HashMap<String, JobStatus> = HashMap::new();
     let poll_interval = Duration::from_secs(cfg.poll_interval_secs);
+    // One-shot notices already sent for a job id; entries are dropped when
+    // the job leaves squeue so a resubmitted id can trigger again.
+    let mut notified_pending: std::collections::HashSet<String> = Default::default();
+    let mut notified_walltime: std::collections::HashSet<String> = Default::default();
+    // Epoch seconds a job id was first observed PENDING. squeue's %M is
+    // "0:00" for pending jobs and %V (submit time) carries no timezone, so
+    // queue age is measured from when the monitor first saw the job pending.
+    // Entries are dropped once the job leaves the PENDING state.
+    let mut pending_since: HashMap<String, u64> = HashMap::new();
 
     loop {
         let squeue_cmd = crate::squeue::build_squeue_command(
@@ -136,6 +205,12 @@ pub async fn run_poller<R: CommandRunner + 'static>(
                 for event in &events {
                     match event {
                         DiffEvent::StateChanged { previous, current } => {
+                            let (detail, returned_runner) = if is_failed_state(&current.state) {
+                                fetch_stderr_tail(runner, &cfg, current).await
+                            } else {
+                                (None, runner)
+                            };
+                            runner = returned_runner;
                             push_history(
                                 &history,
                                 &app_handle,
@@ -143,7 +218,7 @@ pub async fn run_poller<R: CommandRunner + 'static>(
                                 current,
                                 &previous.state,
                                 &current.state,
-                                None,
+                                detail.as_deref(),
                             );
                             if crate::notify_filter::should_notify(
                                 &cfg.notifications,
@@ -156,7 +231,7 @@ pub async fn run_poller<R: CommandRunner + 'static>(
                                     &current.name,
                                     &previous.state,
                                     &current.state,
-                                    None,
+                                    detail.as_deref(),
                                 );
                             }
                         }
@@ -178,6 +253,15 @@ pub async fn run_poller<R: CommandRunner + 'static>(
                                         crate::sacct::parse_sacct_output(&sacct_output)
                                     {
                                         if result.state != job.state {
+                                            let mut detail = format!("exit {}", result.exit_code);
+                                            if is_failed_state(&result.state) {
+                                                let (tail, returned_runner) =
+                                                    fetch_stderr_tail(runner, &cfg, job).await;
+                                                runner = returned_runner;
+                                                if let Some(tail) = tail {
+                                                    detail = format!("{detail}\n{tail}");
+                                                }
+                                            }
                                             push_history(
                                                 &history,
                                                 &app_handle,
@@ -185,7 +269,7 @@ pub async fn run_poller<R: CommandRunner + 'static>(
                                                 job,
                                                 &job.state,
                                                 &result.state,
-                                                Some(&format!("exit {}", result.exit_code)),
+                                                Some(&detail),
                                             );
                                             if crate::notify_filter::should_notify(
                                                 &cfg.notifications,
@@ -198,7 +282,7 @@ pub async fn run_poller<R: CommandRunner + 'static>(
                                                     &job.name,
                                                     &job.state,
                                                     &result.state,
-                                                    Some(&format!("exit {}", result.exit_code)),
+                                                    Some(&detail),
                                                 );
                                             }
                                         }
@@ -214,6 +298,99 @@ pub async fn run_poller<R: CommandRunner + 'static>(
                         DiffEvent::New(_) => {}
                     }
                 }
+
+                // Escalation notices for jobs still in squeue. These run
+                // after the diff loop so a state-change notification for the
+                // same job always goes out first.
+                for job in current.iter() {
+                    if job.state.starts_with("PENDING") {
+                        // Queue age since first observed pending this run.
+                        let first_seen =
+                            *pending_since.entry(job.id.clone()).or_insert_with(now_secs);
+                        let queued_secs = now_secs().saturating_sub(first_seen);
+                        if !notified_pending.contains(&job.id)
+                            && crate::notify_filter::pending_too_long(
+                                queued_secs,
+                                cfg.notifications.notify_pending_after_secs,
+                                &job.reason,
+                            )
+                        {
+                            notified_pending.insert(job.id.clone());
+                            push_history(
+                                &history,
+                                &app_handle,
+                                &cfg.cluster_name,
+                                job,
+                                "PENDING",
+                                "PENDING",
+                                Some(&format!("pending too long {}", job.reason)),
+                            );
+                            // Escalation is opt-in via notify_pending_after_secs,
+                            // so it bypasses the notify_states allow-list but
+                            // still respects quiet hours.
+                            if !crate::notify_filter::in_quiet_hours(
+                                &cfg.notifications,
+                                current_hm(),
+                            ) {
+                                crate::notifier::notify_transition(
+                                    &app_handle,
+                                    &cfg.cluster_name,
+                                    &job.name,
+                                    "PENDING",
+                                    &format!("still PENDING {}", job.reason),
+                                    Some(&format!(
+                                        "queued for over {} min",
+                                        cfg.notifications.notify_pending_after_secs / 60
+                                    )),
+                                );
+                            }
+                        }
+                    } else if job.state.starts_with("RUNNING") {
+                        let pct = cfg.notifications.notify_walltime_pct;
+                        if pct > 0
+                            && !notified_walltime.contains(&job.id)
+                            && crate::notify_filter::walltime_pct(&job.time, &job.time_limit)
+                                .is_some_and(|p| p >= u64::from(pct))
+                        {
+                            notified_walltime.insert(job.id.clone());
+                            let msg = format!("{pct}% of walltime used");
+                            push_history(
+                                &history,
+                                &app_handle,
+                                &cfg.cluster_name,
+                                job,
+                                "RUNNING",
+                                "RUNNING",
+                                Some(&msg),
+                            );
+                            // Opt-in via notify_walltime_pct: bypass the
+                            // notify_states allow-list, honour quiet hours.
+                            if !crate::notify_filter::in_quiet_hours(
+                                &cfg.notifications,
+                                current_hm(),
+                            ) {
+                                crate::notifier::notify_transition(
+                                    &app_handle,
+                                    &cfg.cluster_name,
+                                    &job.name,
+                                    "RUNNING",
+                                    "RUNNING",
+                                    Some(&msg),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Drop one-shot notice state for jobs no longer in squeue, and
+                // pending-age state for jobs that are gone or no longer pending.
+                notified_pending.retain(|id| current.iter().any(|j| &j.id == id));
+                notified_walltime.retain(|id| current.iter().any(|j| &j.id == id));
+                pending_since.retain(|id, _| {
+                    current
+                        .iter()
+                        .any(|j| &j.id == id && j.state.starts_with("PENDING"))
+                });
 
                 previous = current.into_iter().map(|j| (j.id.clone(), j)).collect();
                 let mut jobs: Vec<&JobStatus> = previous.values().collect();

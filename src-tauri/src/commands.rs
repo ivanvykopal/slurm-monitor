@@ -136,11 +136,21 @@ pub fn cluster_health(
         cluster_cfg.key_passphrase.as_deref(),
     )
     .map_err(|e| e.to_string())?;
-    let partitions = crate::sinfo::parse(
+    let mut partitions = crate::sinfo::parse(
         &client
             .run(&crate::sinfo::build_command(cluster_cfg.slurm_conf_path.as_deref()))
             .map_err(|e| e.to_string())?,
     );
+    // Queue depth per partition — the where-to-submit signal. Degrades
+    // gracefully: counts stay 0 when the query fails.
+    match client.run(&crate::sinfo::build_squeue_partition_command(
+        cluster_cfg.slurm_conf_path.as_deref(),
+    )) {
+        Ok(sq) => crate::sinfo::merge_job_counts(&mut partitions, &sq),
+        Err(e) => tracing::warn!("[{cluster}] health: squeue partition counts failed: {e}"),
+    }
+    // Most idle nodes first: the best place to submit right now.
+    partitions.sort_by_key(|p| std::cmp::Reverse(crate::sinfo::idle_nodes(&p.nodes).unwrap_or(0)));
     let fair_share = client
         .run(&crate::sshare::build_command(
             cluster_cfg.effective_squeue_user(),
@@ -260,6 +270,26 @@ pub async fn cluster_projects(
                     tracing::warn!("[{cluster_name}] projects: sacctmgr qos failed: {e}");
                 }
             }
+
+            // Last-30-day usage for the daily burn rate. Degrades
+            // gracefully: *_hours_30d stay "0" (burn rate hidden).
+            let start = std::time::Instant::now();
+            match client.run(&crate::projects::build_sreport_30d_command(
+                &accounts,
+                cluster_cfg.slurm_conf_path.as_deref(),
+            )) {
+                Ok(sreport_out) => {
+                    tracing::info!(
+                        "[{cluster_name}] projects: sreport 30d took {:?}, {} bytes",
+                        start.elapsed(),
+                        sreport_out.len()
+                    );
+                    crate::projects::merge_sreport_30d(&mut projects, &sreport_out);
+                }
+                Err(e) => {
+                    tracing::warn!("[{cluster_name}] projects: sreport 30d failed: {e}");
+                }
+            }
         }
 
         Ok(ClusterProjects { projects })
@@ -268,6 +298,142 @@ pub async fn cluster_projects(
     .map_err(|e| format!("projects task failed: {e}"))?
     .map_err(|e| e.to_string())?;
     tracing::info!("[{cluster}] projects: total {:?}", started.elapsed());
+    Ok(result)
+}
+
+#[derive(serde::Serialize)]
+pub struct ClusterEfficiency {
+    jobs: Vec<crate::efficiency::JobEfficiency>,
+}
+
+/// Finished jobs of the last 7 days with utilization metrics (seff-style).
+#[tauri::command]
+pub async fn cluster_efficiency(
+    cluster: String,
+    cfg: State<'_, Mutex<Config>>,
+) -> Result<ClusterEfficiency, String> {
+    let cluster_cfg = {
+        let name = cluster.clone();
+        cfg.lock()
+            .unwrap()
+            .clusters
+            .iter()
+            .find(|c| c.name == name)
+            .cloned()
+            .ok_or_else(|| format!("unknown cluster {cluster}"))?
+    };
+    let result = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<ClusterEfficiency> {
+        let mut client = SshClient::connect(
+            &cluster_cfg.host,
+            cluster_cfg.port,
+            &cluster_cfg.username,
+            &PathBuf::from(&cluster_cfg.key_path),
+            cluster_cfg.key_passphrase.as_deref(),
+        )?;
+        let output = client.run(&crate::efficiency::build_command(
+            cluster_cfg.effective_squeue_user(),
+            cluster_cfg.slurm_conf_path.as_deref(),
+        ))?;
+        Ok(ClusterEfficiency {
+            jobs: crate::efficiency::parse(&output),
+        })
+    })
+    .await
+    .map_err(|e| format!("efficiency task failed: {e}"))?
+    .map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+#[derive(serde::Serialize)]
+pub struct ClusterDisks {
+    disks: Vec<crate::disks::DiskUsage>,
+}
+
+/// Filesystems already notified as ≥90% full, per cluster. Cleared per
+/// filesystem when usage falls back under 85% (hysteresis handled in
+/// disks::crossing_threshold).
+static DISK_NOTIFIED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[tauri::command]
+pub async fn cluster_disks(
+    app: tauri::AppHandle,
+    cluster: String,
+    cfg: State<'_, Mutex<Config>>,
+) -> Result<ClusterDisks, String> {
+    let cluster_cfg = {
+        let name = cluster.clone();
+        cfg.lock()
+            .unwrap()
+            .clusters
+            .iter()
+            .find(|c| c.name == name)
+            .cloned()
+            .ok_or_else(|| format!("unknown cluster {cluster}"))?
+    };
+    let result = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<ClusterDisks> {
+        let mut client = SshClient::connect(
+            &cluster_cfg.host,
+            cluster_cfg.port,
+            &cluster_cfg.username,
+            &PathBuf::from(&cluster_cfg.key_path),
+            cluster_cfg.key_passphrase.as_deref(),
+        )?;
+        let mut disks = Vec::new();
+
+        // Quota-reported paths (opt-in). Show usage against the per-user
+        // quota, not the whole filesystem; fall back to df for a path whose
+        // quota query fails or reports no limit.
+        let template = cluster_cfg.quota_command_template();
+        for path in &cluster_cfg.quota_paths {
+            let via_quota = client
+                .run(&crate::quota::build_command(
+                    &cluster_cfg.username,
+                    path,
+                    template,
+                ))
+                .ok()
+                .and_then(|out| crate::quota::parse(&out, path));
+            match via_quota {
+                Some(d) => disks.push(d),
+                None => {
+                    tracing::info!("[{}] disks: no quota for {path}, using df", cluster_cfg.name);
+                    if let Ok(out) =
+                        client.run(&crate::disks::build_command(std::slice::from_ref(path)))
+                    {
+                        disks.extend(crate::disks::parse(&out));
+                    }
+                }
+            }
+        }
+
+        // df-reported paths: everything in disk_paths not already covered by
+        // a quota path.
+        let df_paths: Vec<String> = cluster_cfg
+            .disk_paths
+            .iter()
+            .filter(|p| !cluster_cfg.quota_paths.contains(p))
+            .cloned()
+            .collect();
+        if !df_paths.is_empty() {
+            let output = client.run(&crate::disks::build_command(&df_paths))?;
+            disks.extend(crate::disks::parse(&output));
+        }
+
+        Ok(ClusterDisks { disks })
+    })
+    .await
+    .map_err(|e| format!("disks task failed: {e}"))?
+    .map_err(|e| e.to_string())?;
+
+    // Notify on filesystems crossing 90% since the last check.
+    let mut notified = DISK_NOTIFIED.lock().unwrap();
+    let entry = notified.entry(cluster.clone()).or_default();
+    for d in crate::disks::crossing_threshold(&result.disks, entry) {
+        crate::notifier::notify_disk_almost_full(&app, &cluster, &d.filesystem, d.used_pct);
+    }
+
     Ok(result)
 }
 

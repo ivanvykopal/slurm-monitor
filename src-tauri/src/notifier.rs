@@ -1,6 +1,25 @@
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
+pub fn notify_disk_almost_full(
+    app: &AppHandle,
+    cluster: &str,
+    filesystem: &str,
+    used_pct: Option<u8>,
+) {
+    let pct = used_pct.map(|p| format!(" ({p}% used)")).unwrap_or_default();
+    let body = format!("[{cluster}] {filesystem} is almost full{pct}");
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title("Disk usage warning")
+        .body(body)
+        .show()
+    {
+        tracing::warn!("failed to show notification: {e}");
+    }
+}
+
 pub fn notify_transition(
     app: &AppHandle,
     cluster: &str,

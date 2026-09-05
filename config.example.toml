@@ -14,8 +14,25 @@ poll_interval_secs = 60
 # When set, all SLURM commands run with SLURM_CONF=<path> — useful when the
 # login node's default config points accounting at the wrong slurmdbd host.
 # slurm_conf_path = "~/slurm-custom/slurm/custom_slurm.conf"
+# Filesystems shown in the 💾 Disks panel. Defaults to ["/home", "/scratch"].
+# Missing paths are skipped automatically (e.g. perun has no /scratch).
+# disk_paths = ["/home", "/scratch"]
+# Paths reported via per-user quota instead of df (opt-in, default none).
+# df shows the whole filesystem's capacity, not your quota; list a path here
+# to show usage against the real limit (e.g. perun /home is 500 GB).
+# quota_paths = ["/home"]
+# Override the quota query if the cluster uses a different tool. {user} and
+# {path} are substituted. Default tries `lfs quota` then `quota -s`.
+# quota_command = "lfs quota -h -u {user} {path} 2>/dev/null || quota -s 2>/dev/null"
 
 [notifications]
 notify_states = []   # empty = notify on every transition; e.g. ["FAILED","COMPLETED","CANCELLED"]
 # quiet_start = "22:00"
 # quiet_end = "08:00"
+# Lines of stderr attached to FAILED/CANCELLED/TIMEOUT notifications (0 = off).
+# attach_error_tail_lines = 50
+# Notify once when a job waits in queue longer than this many seconds (0 = off).
+# Escalation notices below bypass notify_states but still honour quiet hours.
+# notify_pending_after_secs = 7200
+# Notify once when a running job passes this percent of its walltime (0 = off).
+# notify_walltime_pct = 90

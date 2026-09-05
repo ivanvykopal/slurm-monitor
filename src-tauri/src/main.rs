@@ -4,12 +4,15 @@ mod commands;
 mod config;
 mod config_path;
 mod config_watch;
+mod disks;
+mod efficiency;
 mod history;
 mod logtail;
 mod notifier;
 mod notify_filter;
 mod poller;
 mod projects;
+mod quota;
 mod sacct;
 mod scancel;
 mod sinfo;
@@ -102,6 +105,8 @@ fn main() {
             commands::tail_log,
             commands::cluster_health,
             commands::cluster_projects,
+            commands::cluster_efficiency,
+            commands::cluster_disks,
             commands::hide_window,
             commands::get_ui_state,
             commands::save_ui_state,
