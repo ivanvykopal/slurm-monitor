@@ -1,0 +1,20 @@
+{
+  "name": "slurm-monitor-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5",
+    "@tauri-apps/cli": "^2.11.4",
+    "svelte": "^5",
+    "vite": "^6"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-notification": "^2"
+  }
+}

@@ -1,0 +1,6 @@
+/src-tauri/target
+/src-tauri/gen
+/config.toml
+/src-tauri/config.toml
+node_modules/
+dist/

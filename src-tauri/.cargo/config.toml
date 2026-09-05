@@ -1,0 +1,7 @@
+# Points openssl-sys at the OpenSSL built by vcpkg, so `ssh2`'s
+# "openssl-on-win32" feature (needed for Ed25519 SSH key support on
+# Windows) can find it without the developer setting env vars manually.
+# See ../README.md for the one-time vcpkg setup this depends on.
+[env]
+OPENSSL_DIR = "C:/vcpkg/installed/x64-windows-static-md"
+OPENSSL_STATIC = "1"

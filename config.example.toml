@@ -1,0 +1,21 @@
+# Copy to the app config dir (shown in the app's Settings > "config path"),
+# or let the app create it via the Settings UI.
+
+[[clusters]]
+name = "devana"
+host = "login.devana.example"
+port = 22
+username = "your-username"
+key_path = "/home/you/.ssh/id_ed25519"
+# key_passphrase = "only-if-needed"
+poll_interval_secs = 60
+# squeue_user = "someone-else"
+# Optional: path to a custom slurm.conf on the cluster (in your home dir).
+# When set, all SLURM commands run with SLURM_CONF=<path> — useful when the
+# login node's default config points accounting at the wrong slurmdbd host.
+# slurm_conf_path = "~/slurm-custom/slurm/custom_slurm.conf"
+
+[notifications]
+notify_states = []   # empty = notify on every transition; e.g. ["FAILED","COMPLETED","CANCELLED"]
+# quiet_start = "22:00"
+# quiet_end = "08:00"
