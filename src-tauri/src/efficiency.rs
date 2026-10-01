@@ -218,8 +218,8 @@ mod tests {
 
     #[test]
     fn builds_command_with_user() {
-        let cmd = build_command("ivan", None);
-        assert!(cmd.contains("sacct -u ivan --starttime now-7days --endtime now"));
+        let cmd = build_command("jdoe", None);
+        assert!(cmd.contains("sacct -u jdoe --starttime now-7days --endtime now"));
         assert!(cmd.contains("JobName%40"));
         assert!(cmd.contains("TotalCPU"));
     }

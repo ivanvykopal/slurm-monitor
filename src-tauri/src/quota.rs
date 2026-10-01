@@ -80,16 +80,16 @@ mod tests {
 
     #[test]
     fn builds_command_substitutes_user_and_quoted_path() {
-        let cmd = build_command("ivan", "/home", crate::config::DEFAULT_QUOTA_COMMAND);
+        let cmd = build_command("jdoe", "/home", crate::config::DEFAULT_QUOTA_COMMAND);
         assert!(cmd.starts_with("bash -lc '"));
-        assert!(cmd.contains("lfs quota -h -u ivan \"/home\""));
+        assert!(cmd.contains("lfs quota -h -u jdoe \"/home\""));
         assert!(cmd.contains("|| quota -s"));
     }
 
     #[test]
     fn parses_quota_s_human_output() {
         let out = "\
-Disk quotas for user ivan (uid 1000):
+Disk quotas for user jdoe (uid 1000):
      Filesystem   space   quota   limit   grace   files   quota   limit   grace
       /dev/sdb1    290G    500G    550G           12345       0       0
 ";
@@ -103,7 +103,7 @@ Disk quotas for user ivan (uid 1000):
     #[test]
     fn parses_lfs_quota_human_output() {
         let out = "\
-Disk quotas for usr ivan (uid 1000):
+Disk quotas for usr jdoe (uid 1000):
      Filesystem  used   quota   limit   grace   files   quota   limit   grace
           /home   290G    500G    550G       -   12345       0       0       -
 ";
@@ -117,7 +117,7 @@ Disk quotas for usr ivan (uid 1000):
         // lfs quota / quota without -s report 1 KiB blocks.
         // 524288000 KiB = 500 GiB; 304087040 KiB ≈ 58%.
         let out = "\
-Disk quotas for usr ivan (uid 1000):
+Disk quotas for usr jdoe (uid 1000):
      Filesystem  kbytes   quota      limit      grace  files
        /home   304087040 524288000  576716800   -      12345
 ";
@@ -129,7 +129,7 @@ Disk quotas for usr ivan (uid 1000):
     #[test]
     fn no_quota_returns_none_for_df_fallback() {
         let out = "\
-Disk quotas for user ivan (uid 1000):
+Disk quotas for user jdoe (uid 1000):
      Filesystem   space   quota   limit   grace   files   quota   limit   grace
       /dev/sda1     12G       0       0           1000       0       0
 ";
@@ -139,7 +139,7 @@ Disk quotas for user ivan (uid 1000):
     #[test]
     fn handles_wrapped_filesystem_name() {
         let out = "\
-Disk quotas for user ivan (uid 1000):
+Disk quotas for user jdoe (uid 1000):
      Filesystem   space   quota   limit   grace   files
 /dev/mapper/vg0-home
               290G    500G    550G           12345

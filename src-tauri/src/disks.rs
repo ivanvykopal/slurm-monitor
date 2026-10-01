@@ -13,7 +13,7 @@ pub struct DiskUsage {
 /// whose columns are parsed by position.
 ///
 /// Configured paths are filtered to those that actually exist first: a
-/// cluster that lacks one of them (e.g. perun has no `/scratch`) would
+/// cluster that lacks one of them (e.g. no `/scratch`) would
 /// otherwise make `df` exit non-zero and fail the whole panel instead of
 /// reporting the paths that are present. When none exist, the command exits
 /// 0 with no output and the panel shows the empty-state message.

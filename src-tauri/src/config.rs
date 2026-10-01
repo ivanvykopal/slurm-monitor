@@ -26,7 +26,7 @@ pub struct ClusterConfig {
     pub disk_paths: Vec<String>,
     /// Paths reported via per-user quota instead of df (opt-in, empty by
     /// default). `df` shows the whole filesystem's capacity, not a user's
-    /// quota, so on clusters where /home has a quota (e.g. perun's 500 GB)
+    /// quota, so on clusters where /home has a quota (e.g. a 500 GB home)
     /// list it here to show usage against the real limit. A path that
     /// yields no quota falls back to df.
     #[serde(default)]
@@ -203,13 +203,13 @@ mod tests {
         let file = write_temp_config(
             r#"
             [[clusters]]
-            name = "devana"
+            name = "cluster-a"
             host = "login.cluster.example"
             port = 2222
             username = "jdoe"
             key_path = "/home/jdoe/.ssh/id_ed25519"
             poll_interval_secs = 30
-            squeue_user = "ivan"
+            squeue_user = "jdoe"
             "#,
         );
         let cfg = Config::load(file.path()).expect("config should load");
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(cfg.clusters[0].key_path, "/home/jdoe/.ssh/id_ed25519");
         assert_eq!(cfg.clusters[0].key_passphrase, None);
         assert_eq!(cfg.clusters[0].poll_interval_secs, 30);
-        assert_eq!(cfg.clusters[0].effective_squeue_user(), "ivan");
+        assert_eq!(cfg.clusters[0].effective_squeue_user(), "jdoe");
     }
 
     #[test]
@@ -227,7 +227,7 @@ mod tests {
         let file = write_temp_config(
             r#"
             [[clusters]]
-            name = "devana"
+            name = "cluster-a"
             host = "login.cluster.example"
             username = "jdoe"
             key_path = "/home/jdoe/.ssh/id_ed25519"
@@ -263,8 +263,8 @@ mod tests {
         let file = write_temp_config(
             r#"
         [[clusters]]
-        name = "devana"
-        host = "login.devana.example"
+        name = "cluster-a"
+        host = "login.cluster-a.example"
         username = "jdoe"
         key_path = "/home/jdoe/.ssh/id_ed25519"
 
@@ -272,17 +272,17 @@ mod tests {
         name = "lumi"
         host = "lumi.example"
         port = 2222
-        username = "ivan"
+        username = "jdoe"
         key_path = "/home/jdoe/.ssh/id_rsa"
         poll_interval_secs = 30
     "#,
         );
         let cfg = Config::load(file.path()).expect("load");
         assert_eq!(cfg.clusters.len(), 2);
-        assert_eq!(cfg.clusters[0].name, "devana");
+        assert_eq!(cfg.clusters[0].name, "cluster-a");
         assert_eq!(cfg.clusters[0].port, 22);
         assert_eq!(cfg.clusters[1].poll_interval_secs, 30);
-        assert_eq!(cfg.clusters[1].effective_squeue_user(), "ivan");
+        assert_eq!(cfg.clusters[1].effective_squeue_user(), "jdoe");
     }
 
     #[test]
@@ -316,7 +316,7 @@ mod tests {
         let file = write_temp_config(
             r#"
             [[clusters]]
-            name = "perun"
+            name = "cluster-b"
             host = "login.cluster.example"
             username = "alice"
             key_path = "/home/jdoe/.ssh/id_ed25519"
@@ -359,7 +359,7 @@ mod tests {
         let file = write_temp_config(
             r#"
             [[clusters]]
-            name = "devana"
+            name = "cluster-a"
             host = "login.cluster.example"
             username = "jdoe"
             key_path = "/home/jdoe/.ssh/id_ed25519"
@@ -374,17 +374,17 @@ mod tests {
         let file = write_temp_config(
             r#"
             [[clusters]]
-            name = "devana"
+            name = "cluster-a"
             host = "login.cluster.example"
             username = "jdoe"
             key_path = "/home/jdoe/.ssh/id_ed25519"
-            disk_paths = ["/home/ivan", "/fast_scratch"]
+            disk_paths = ["/home/jdoe", "/fast_scratch"]
             "#,
         );
         let cfg = Config::load(file.path()).expect("config should load");
         assert_eq!(
             cfg.clusters[0].disk_paths,
-            vec!["/home/ivan", "/fast_scratch"]
+            vec!["/home/jdoe", "/fast_scratch"]
         );
     }
 }

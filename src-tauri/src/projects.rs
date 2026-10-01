@@ -28,12 +28,12 @@ pub struct ProjectInfo {
     /// Allocated CPU core-hours cap from the QOS GrpTRESMins cpu minutes / 60.
     /// "0" means no cap is set (or it could not be read).
     pub cpu_hours_allocated: String,
-    /// Billing TRES hours consumed (Devana budgets projects in billing:
-    /// CPU=1.0, GPU=16.0 per hour). 0 where billing is not budgeted.
+    /// Billing TRES hours consumed (some clusters budget projects in
+    /// billing: CPU=1.0, GPU=16.0 per hour). 0 where billing is not budgeted.
     pub billing_hours: String,
-    /// Allocated billing-hours cap. On Devana a project's budget is split
-    /// across the <account> and <account>_gpu QOS; this holds their sum.
-    /// "0" means no billing cap is set (e.g. PERUN).
+    /// Allocated billing-hours cap. On such clusters a project's budget is
+    /// split across the <account> and <account>_gpu QOS; this holds their sum.
+    /// "0" means no billing cap is set.
     pub billing_hours_allocated: String,
     /// GPU-hours consumed in the last 30 days, from sreport — the basis for
     /// the daily burn rate. "0" when the recent-usage query failed.
@@ -70,13 +70,13 @@ pub fn build_sreport_30d_command(accounts: &str, slurm_conf: Option<&str>) -> St
 
 /// The allocated GPU-hours cap comes from a per-account QOS whose name matches
 /// the account; its GrpTRESMins holds the gres/gpu budget in minutes.
-/// On Devana a project's budget is split across the <account> and
+/// On some clusters a project's budget is split across the <account> and
 /// <account>_gpu QOS, so both are queried and their billing budgets summed.
 /// `accounts` is a comma-separated list, reused directly as the QOS name list.
 pub fn build_qos_command(accounts: &str, slurm_conf: Option<&str>) -> String {
     let env = crate::config::slurm_env_prefix(slurm_conf);
-    // Devana splits a project's budget across <account> and <account>_gpu
-    // QOS; query both so merge_qos can sum the billing budget.
+    // Such clusters split a project's budget across <account> and
+    // <account>_gpu QOS; query both so merge_qos can sum the billing budget.
     let mut names: Vec<&str> = accounts.split(',').map(str::trim).collect();
     names.retain(|n| !n.is_empty());
     let mut list: Vec<String> = names.iter().map(|n| n.to_string()).collect();
@@ -253,8 +253,8 @@ pub fn merge_sreport(projects: &mut [ProjectInfo], sreport_output: &str) {
             }
         }
     }
-    // Some clusters (e.g. Devana) emit only per-user rows, without the
-    // empty-login account-total row PERUN produces. There the totals above
+    // Some clusters emit only per-user rows, without the empty-login
+    // account-total row others produce. There the totals above
     // never get set, so fall back to the sum of the per-user rows.
     for project in projects.iter_mut() {
         if project.gpu_hours == "0" && !project.users.is_empty() {
@@ -336,7 +336,7 @@ pub fn merge_qos(projects: &mut [ProjectInfo], qos_output: &str) {
         if gpu_mins.is_none() && cpu_mins.is_none() && billing_mins.is_none() {
             continue; // no budget on this QOS
         }
-        // Devana splits a project's budget across <account> and <account>_gpu
+        // A project's budget may be split across <account> and <account>_gpu
         // QOS (e.g. proj-gpu and proj-gpu_gpu); accumulate the billing
         // budget instead of overwriting. A QOS named exactly like the account
         // can match twice (its own line and the "_gpu" one is a distinct name,
@@ -499,16 +499,16 @@ cluster-x|proj-beta|alice|Alice Doe|gres/gpu|1078
 
     #[test]
     fn merges_sreport_user_only_rows_sum_into_totals() {
-        // Devana shape: no empty-login account-total rows, only per-user.
+        // Shape with no empty-login account-total rows, only per-user.
         let mut projects = base_projects();
         let out = "\
 Cluster|Account|Login|Proper Name|TRES Name|Used
-devana|proj-alpha|bob|Bob Doe|cpu|32900
-devana|proj-alpha|bob|Bob Doe|gres/gpu|1645
-devana|proj-alpha|alice|Alice Doe|cpu|5100
-devana|proj-alpha|alice|Alice Doe|gres/gpu|200
-devana|proj-beta|alice|Alice Doe|cpu|21560
-devana|proj-beta|alice|Alice Doe|gres/gpu|1078
+cluster-a|proj-alpha|bob|Bob Doe|cpu|32900
+cluster-a|proj-alpha|bob|Bob Doe|gres/gpu|1645
+cluster-a|proj-alpha|alice|Alice Doe|cpu|5100
+cluster-a|proj-alpha|alice|Alice Doe|gres/gpu|200
+cluster-a|proj-beta|alice|Alice Doe|cpu|21560
+cluster-a|proj-beta|alice|Alice Doe|gres/gpu|1078
 ";
         merge_sreport(&mut projects, out);
         assert_eq!(projects[0].gpu_hours, "1845");
@@ -569,8 +569,8 @@ proj-beta|cpu=5308440,gres/gpu=336960
         let mut projects = base_projects();
         let out = "\
 Cluster|Account|Login|Proper Name|TRES Name|Used
-devana|proj-alpha|||billing|5000
-devana|proj-alpha|bob|Bob Doe|billing|24215
+cluster-a|proj-alpha|||billing|5000
+cluster-a|proj-alpha|bob|Bob Doe|billing|24215
 ";
         merge_sreport(&mut projects, out);
         assert_eq!(projects[0].billing_hours, "5000"); // total row wins
@@ -581,8 +581,8 @@ devana|proj-alpha|bob|Bob Doe|billing|24215
         let mut projects = base_projects();
         let out = "\
 Cluster|Account|Login|Proper Name|TRES Name|Used
-devana|proj-alpha|bob|Bob Doe|billing|100.5
-devana|proj-alpha|alice|Alice Doe|billing|200
+cluster-a|proj-alpha|bob|Bob Doe|billing|100.5
+cluster-a|proj-alpha|alice|Alice Doe|billing|200
 ";
         merge_sreport(&mut projects, out);
         assert_eq!(projects[0].billing_hours, "300.5");
@@ -590,14 +590,14 @@ devana|proj-alpha|alice|Alice Doe|billing|200
 
     #[test]
     fn merges_qos_billing_budget_sums_gpu_variant() {
-        // Devana: budget split across <account> and <account>_gpu QOS.
+        // Budget split across <account> and <account>_gpu QOS.
         let mut projects = base_projects();
         let out = "\
 proj-gpu|billing=300000
 proj-gpu_gpu|billing=19200000
 proj-beta|cpu=5308440,gres/gpu=336960
 ";
-        // base_projects uses perun-prefixed accounts; rename for the test.
+        // base_projects uses the default account names; rename for the test.
         projects[0].account = "proj-gpu".into();
         merge_qos(&mut projects, out);
         // 300000/60 + 19200000/60 = 325000 h
@@ -686,11 +686,11 @@ proj-beta|cpu=5308440,gres/gpu=336960
         let mut projects = base_projects();
         let out = "\
 Cluster|Account|Login|Proper Name|TRES Name|Used
-devana|proj-alpha|||cpu|1000
-devana|proj-alpha|||gres/gpu|200
-devana|proj-alpha|||billing|300
-devana|proj-alpha|bob|Bob Doe|gres/gpu|999
-devana|proj-beta|||cpu|50
+cluster-a|proj-alpha|||cpu|1000
+cluster-a|proj-alpha|||gres/gpu|200
+cluster-a|proj-alpha|||billing|300
+cluster-a|proj-alpha|bob|Bob Doe|gres/gpu|999
+cluster-a|proj-beta|||cpu|50
 ";
         merge_sreport_30d(&mut projects, out);
         assert_eq!(projects[0].cpu_hours_30d, "1000");
