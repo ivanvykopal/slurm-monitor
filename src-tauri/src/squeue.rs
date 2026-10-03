@@ -55,19 +55,19 @@ mod tests {
 
     #[test]
     fn builds_command_with_user_and_format() {
-        let cmd = build_squeue_command("ivan", None);
+        let cmd = build_squeue_command("jdoe", None);
         assert_eq!(
             cmd,
-            "bash -lc 'squeue -u ivan --noheader --format=\"%i|%j|%T|%M|%l|%D|%R|%P|%S\"'"
+            "bash -lc 'squeue -u jdoe --noheader --format=\"%i|%j|%T|%M|%l|%D|%R|%P|%S\"'"
         );
     }
 
     #[test]
     fn builds_command_with_slurm_conf_prefix() {
-        let cmd = build_squeue_command("ivan", Some("~/slurm-custom/slurm/custom_slurm.conf"));
+        let cmd = build_squeue_command("jdoe", Some("~/slurm-custom/slurm/custom_slurm.conf"));
         assert_eq!(
             cmd,
-            "bash -lc 'SLURM_CONF=~/slurm-custom/slurm/custom_slurm.conf squeue -u ivan --noheader --format=\"%i|%j|%T|%M|%l|%D|%R|%P|%S\"'"
+            "bash -lc 'SLURM_CONF=~/slurm-custom/slurm/custom_slurm.conf squeue -u jdoe --noheader --format=\"%i|%j|%T|%M|%l|%D|%R|%P|%S\"'"
         );
     }
 
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn parses_extended_fields() {
         let output = "12345|train|RUNNING|01:23:45|1-00:00:00|2|node042|gpu|N/A\n";
-        let jobs = parse_squeue_output(output, "devana");
+        let jobs = parse_squeue_output(output, "cluster-a");
         assert_eq!(jobs[0].time_limit, "1-00:00:00");
         assert_eq!(jobs[0].nodes, "2");
         assert_eq!(jobs[0].reason, "node042"); // %R is node list when running
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn parses_estimated_start() {
         let output = "12345|train|PENDING|0:00|1-00:00:00|1|(Priority)|gpu|2024-01-15T14:32:00\n";
-        let jobs = parse_squeue_output(output, "devana");
+        let jobs = parse_squeue_output(output, "cluster-a");
         assert_eq!(jobs[0].est_start, "2024-01-15T14:32:00");
     }
 }

@@ -538,8 +538,8 @@ mod tests {
         // Sanity check that the commands run_poller will issue are the
         // same ones squeue.rs / sacct.rs build, so a job id round-trips
         // correctly through a vanish -> sacct lookup.
-        let squeue_cmd = crate::squeue::build_squeue_command("ivan", None);
-        assert!(squeue_cmd.contains("ivan"));
+        let squeue_cmd = crate::squeue::build_squeue_command("jdoe", None);
+        assert!(squeue_cmd.contains("jdoe"));
         let sacct_cmd = crate::sacct::build_sacct_command("999", None);
         assert!(sacct_cmd.contains("999"));
     }
@@ -594,7 +594,7 @@ mod tests {
         };
 
         // Tick 1: establish state.
-        let first_output = runner.run(&crate::squeue::build_squeue_command("ivan", None)).unwrap();
+        let first_output = runner.run(&crate::squeue::build_squeue_command("jdoe", None)).unwrap();
         let first_current = crate::squeue::parse_squeue_output(&first_output, "test");
         let mut previous: HashMap<String, JobStatus> = first_current
             .into_iter()
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(previous.len(), 1);
 
         // Tick 2: job vanished from squeue.
-        let second_output = runner.run(&crate::squeue::build_squeue_command("ivan", None)).unwrap();
+        let second_output = runner.run(&crate::squeue::build_squeue_command("jdoe", None)).unwrap();
         let second_current = crate::squeue::parse_squeue_output(&second_output, "test");
         let events = diff(&previous, &second_current);
         assert_eq!(events.len(), 1);

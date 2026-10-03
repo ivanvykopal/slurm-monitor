@@ -2,8 +2,8 @@
 # or let the app create it via the Settings UI.
 
 [[clusters]]
-name = "devana"
-host = "login.devana.example"
+name = "cluster-a"
+host = "login.cluster-a.example"
 port = 22
 username = "your-username"
 key_path = "/home/you/.ssh/id_ed25519"
@@ -15,11 +15,12 @@ poll_interval_secs = 60
 # login node's default config points accounting at the wrong slurmdbd host.
 # slurm_conf_path = "~/slurm-custom/slurm/custom_slurm.conf"
 # Filesystems shown in the 💾 Disks panel. Defaults to ["/home", "/scratch"].
-# Missing paths are skipped automatically (e.g. perun has no /scratch).
+# Missing paths are skipped automatically (e.g. a cluster with no /scratch).
 # disk_paths = ["/home", "/scratch"]
 # Paths reported via per-user quota instead of df (opt-in, default none).
 # df shows the whole filesystem's capacity, not your quota; list a path here
-# to show usage against the real limit (e.g. perun /home is 500 GB).
+# to show usage against the real limit (e.g. a cluster with a 500 GB /home
+# quota).
 # quota_paths = ["/home"]
 # Override the quota query if the cluster uses a different tool. {user} and
 # {path} are substituted. Default tries `lfs quota` then `quota -s`.

@@ -43,13 +43,13 @@ picks up OpenSSL automatically — no manual env vars needed.
 Config no longer lives next to the executable. It's read from and
 written to the OS-specific **app config directory** (Tauri's
 `app_config_dir()`, derived from the app identifier
-`sk.kinit.perun.slurm-monitor`):
+`com.slurm-monitor.app`):
 
 | OS      | Path                                                                 |
 |---------|-----------------------------------------------------------------------|
-| Windows | `%APPDATA%\sk.kinit.perun.slurm-monitor\config.toml`                  |
-| macOS   | `~/Library/Application Support/sk.kinit.perun.slurm-monitor/config.toml` |
-| Linux   | `~/.config/sk.kinit.perun.slurm-monitor/config.toml`                  |
+| Windows | `%APPDATA%\com.slurm-monitor.app\config.toml`                  |
+| macOS   | `~/Library/Application Support/com.slurm-monitor.app/config.toml` |
+| Linux   | `~/.config/com.slurm-monitor.app/config.toml`                  |
 
 In each case the file loaded/saved is `config.toml` inside that
 directory.
@@ -83,8 +83,8 @@ Example:
 
 ```toml
 [[clusters]]
-name = "devana"
-host = "login.devana.example"
+name = "cluster-a"
+host = "login.cluster-a.example"
 username = "jdoe"
 key_path = "/home/jdoe/.ssh/id_ed25519"
 
@@ -92,7 +92,7 @@ key_path = "/home/jdoe/.ssh/id_ed25519"
 name = "lumi"
 host = "lumi.example"
 port = 2222
-username = "ivan"
+username = "alice"
 key_path = "/home/jdoe/.ssh/id_rsa"
 poll_interval_secs = 30
 ```
